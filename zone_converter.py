@@ -1,15 +1,24 @@
-''' Calculates voltages on the transformer LV
-Used for determining appropriate transformer tap range
+''' zone_converter.py
+Used for searching a PowerFactory model for "feeders" defined by zones. Once
+a list of "feeders" has been found the algorithm attempts to find the head
+cubicle of the feeder.
+
+The algorithm to find the head cubicle uses a LCFS (greedy) search to find the
+shortest path to the head cubicle. The algorithm stops if it cannot find a
+cubicle once the path length reaches 40 branches.
+
+If successful at finding the head cubicle, then a
+PowerFactory feeder object is created to replace the zone "feeder".
+
+The scaling factor characteristic is copied from the zone "feeder" to the new
+PowerFactory feeder object. Following this the old zone "feeder" is deleted.
 '''
-import powerfactory as pf
-import pandas as pd
-import importlib
-import search
-importlib.reload(search)
-from search import *
 import heapq
+from search import *
+import powerfactory as pf
 
 class LCFSFrontier(Frontier):
+    """Implements a LCFS frontier for use with generic graph search"""
     def __init__(self):
         self.container = []
         self.visited = set()
@@ -21,7 +30,7 @@ class LCFSFrontier(Frontier):
 
         """
         if path[-1].head not in self.visited:
-                self.container.append(path)
+            self.container.append(path)
         #heapq.heapify(self.container)
         if path[-1].tail not in self.expanded:
             if path[-1].tail:
@@ -31,12 +40,12 @@ class LCFSFrontier(Frontier):
 
         while len(self.container) > 0:
             heap = []
-            for x,item in enumerate(self.container):
-                heap.append((sum(arc.cost for arc in item),x))
+            for x, item in enumerate(self.container):
+                heap.append((sum(arc.cost for arc in item), x))
             #print(heap)
             heapq.heapify(heap)
             index = heap[0][1]
-            if heap[0][0] > 50:
+            if heap[0][0] > 30:
                 Globals.app.PrintPlain(heap[0][0])
                 return None
             #print(index)
@@ -50,51 +59,9 @@ class LCFSFrontier(Frontier):
                 self.visited.add(self.container[index][-1].head)
                 yield self.container.pop(index)
 
-
-
-class DFSFrontier(Frontier):
-    """Implements a frontier container appropriate for depth-first
-    search."""
-
-    def __init__(self):
-        """The constructor takes no argument. It initialises the
-        container to an empty list."""
-        self.container = []
-
-
-    def add(self, path):
-        #Add the path to the frontier container.
-        self.container.append(path)
-
-
-    def __iter__(self):
-        #Pop (return and remove) the path from the end of the frontier
-        #(DFS stack).
-        while len(self.container) > 0:
-            yield self.container.pop()
-
-class BFSFrontier(Frontier):
-    """Implements a frontier container appropriate for breadth-first
-    search."""
-
-    def __init__(self):
-        """The constructor takes no argument. It initialises the
-        container to an empty list."""
-        self.container = []
-
-
-    def add(self, path):
-        #Add the path to the frontier container.
-        self.container.append(path)
-
-
-    def __iter__(self):
-        #Pop (return and remove) the path from the end of the frontier
-        #(BFS queue).
-        while len(self.container) > 0:
-            yield self.container.pop(0)
-
 class NetGraph(Graph):
+    """Defines a graph based around a PowerFactory networkself.
+    """
     def __init__(self, nodelist):
         #print(self.map_str)
         self.starting_list = []
@@ -114,9 +81,6 @@ class NetGraph(Graph):
         return last_arc.GetClassName() == "ElmCoup" \
                and last_arc.loc_name[:3] == self.zone.loc_name[:3]
 
-        #print(self.mapwidth)
-        #print(self.mapheight)
-        #print(self.barriers)
     def outgoing_arcs(self, node):
         cubs = node.GetConnectedCubicles()
         for cub in cubs:
@@ -144,6 +108,7 @@ class NetGraph(Graph):
         return "", False
 
 class Globals():
+    """Globally used variables defined within this container"""
     app = pf.GetApplication()
 
 def print_actions(path):
@@ -180,13 +145,6 @@ def get_parent_switch(zone):
     #Globals.app.PrintPlain(zone_terms)
     if len(zone_terms) > 0:
         graph = NetGraph(zone_terms)
-        #Globals.app.PrintPlain(graph.starting_list)
-        #Globals.app.PrintPlain("Outgoing arcs (available actions) at starting states:")
-        # for s in sorted(graph.starting_nodes(), key= lambda x: x.loc_name):
-        #    Globals.app.PrintPlain(s)
-        #    for arc in graph.outgoing_arcs(s):
-        #        Globals.app.PrintPlain("  " + str(arc))
-
         solutions = generic_search(graph, LCFSFrontier())
         solution = next(solutions, None)
         print_actions(solution)
@@ -198,10 +156,7 @@ def get_parent_switch(zone):
 def find_target_cub(path, zone):
     tail, head, switch, cost = path
     Globals.app.PrintPlain(switch)
-    #Globals.app.PrintPlain(switch)
-    #Globals.app.PrintPlain(tail)
-    #Globals.app.PrintPlain(head)
-    #Globals.app.PrintPlain(cost)
+
     #get the cubicles from the switch to find which one to create the feeder on
     #check switch matches zone name
     if switch == "no action":
@@ -230,11 +185,9 @@ def main():
         Globals.app.PrintPlain(f"Searching for head switch of {zone}")
         path = get_parent_switch(zone)
         if path:
-            tail, head, switch, cost = path
             cub = find_target_cub(path, zone)
-            Globals.app.PrintPlain(cub)
             if cub:
-                net = switch.GetParent()
+                Globals.app.PrintPlain(cub)
                 feeder = feedfld.CreateObject("ElmFeeder", zone.loc_name)
                 feeder.obj_id = cub
                 feeder.icolor = zone.icolor
